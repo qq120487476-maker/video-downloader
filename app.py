@@ -24,6 +24,12 @@ def get_info():
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Referer': 'https://www.bilibili.com',
+            'Origin': 'https://www.bilibili.com',
+        },
+        'extractor_args': {'bilibili': {'prefer_multi_flv': ['True']}},
     }
 
     try:
@@ -89,6 +95,12 @@ def download():
         'outtmpl': os.path.join(temp_dir, f'{safe_name}.%(ext)s'),
         'format': format_id,
         'merge_output_format': 'mp4',
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Referer': 'https://www.bilibili.com',
+            'Origin': 'https://www.bilibili.com',
+        },
+        'extractor_args': {'bilibili': {'prefer_multi_flv': ['True']}},
     }
 
     try:
