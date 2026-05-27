@@ -4,6 +4,9 @@ import os
 import uuid
 import tempfile
 import shutil
+import imageio_ffmpeg
+
+FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
 app = Flask(__name__)
 
@@ -24,6 +27,7 @@ def get_info():
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
+        'ffmpeg_location': FFMPEG_PATH,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Referer': 'https://www.bilibili.com',
@@ -92,6 +96,7 @@ def download():
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
+        'ffmpeg_location': FFMPEG_PATH,
         'outtmpl': os.path.join(temp_dir, f'{safe_name}.%(ext)s'),
         'format': format_id,
         'merge_output_format': 'mp4',
