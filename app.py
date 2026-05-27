@@ -4,11 +4,24 @@ import os
 import uuid
 import tempfile
 import shutil
+import threading
 import imageio_ffmpeg
 
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
 app = Flask(__name__)
+
+# job_id -> {status, file, filename, error, temp_dir}
+jobs = {}
+jobs_lock = threading.Lock()
+
+
+def _headers():
+    return {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Referer': 'https://www.bilibili.com',
+        'Origin': 'https://www.bilibili.com',
+    }
 
 
 @app.route('/')
@@ -20,7 +33,6 @@ def index():
 def get_info():
     data = request.get_json()
     url = data.get('url', '').strip()
-
     if not url:
         return jsonify({'error': '请提供视频链接'}), 400
 
@@ -28,11 +40,7 @@ def get_info():
         'quiet': True,
         'no_warnings': True,
         'ffmpeg_location': FFMPEG_PATH,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Referer': 'https://www.bilibili.com',
-            'Origin': 'https://www.bilibili.com',
-        },
+        'http_headers': _headers(),
         'extractor_args': {'bilibili': {'prefer_multi_flv': ['True']}},
     }
 
@@ -42,7 +50,6 @@ def get_info():
 
         formats = []
         seen_heights = set()
-
         if 'formats' in info:
             for f in reversed(info['formats']):
                 height = f.get('height')
@@ -62,12 +69,7 @@ def get_info():
             formats.insert(0, {'format_id': 'bestvideo+bestaudio/best', 'label': '最佳画质', 'height': 99999})
 
         duration = info.get('duration', 0)
-        if duration:
-            minutes = int(duration // 60)
-            seconds = int(duration % 60)
-            duration_str = f'{minutes}:{seconds:02d}'
-        else:
-            duration_str = ''
+        duration_str = f'{int(duration//60)}:{int(duration%60):02d}' if duration else ''
 
         return jsonify({
             'title': info.get('title', '未知标题'),
@@ -80,16 +82,7 @@ def get_info():
         return jsonify({'error': f'解析失败: {str(e)}'}), 400
 
 
-@app.route('/api/download', methods=['POST'])
-def download():
-    data = request.get_json()
-    url = data.get('url', '').strip()
-    format_id = data.get('format_id', 'bestvideo+bestaudio/best')
-    title = data.get('title', 'video')
-
-    if not url:
-        return jsonify({'error': '请提供视频链接'}), 400
-
+def _do_download(job_id, url, format_id, title):
     temp_dir = tempfile.mkdtemp()
     safe_name = str(uuid.uuid4())
 
@@ -103,11 +96,7 @@ def download():
         'socket_timeout': 60,
         'retries': 10,
         'fragment_retries': 10,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Referer': 'https://www.bilibili.com',
-            'Origin': 'https://www.bilibili.com',
-        },
+        'http_headers': _headers(),
         'extractor_args': {'bilibili': {'prefer_multi_flv': ['True']}},
     }
 
@@ -117,31 +106,75 @@ def download():
 
         files = os.listdir(temp_dir)
         if not files:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return jsonify({'error': '下载失败，未找到文件'}), 500
+            raise Exception('下载完成但未找到文件')
 
         filepath = os.path.join(temp_dir, files[0])
         ext = os.path.splitext(files[0])[1]
+        safe_title = "".join(c for c in title if c.isalnum() or c in ' ._-（）').strip() or 'video'
+        filename = f'{safe_title}{ext}'
 
-        safe_title = "".join(c for c in title if c.isalnum() or c in ' ._-（）').strip()
-        if not safe_title:
-            safe_title = 'video'
-        download_name = f'{safe_title}{ext}'
-
-        @after_this_request
-        def cleanup(response):
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return response
-
-        return send_file(filepath, as_attachment=True, download_name=download_name)
+        with jobs_lock:
+            jobs[job_id].update({'status': 'done', 'file': filepath, 'filename': filename, 'temp_dir': temp_dir})
 
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        return jsonify({'error': f'下载失败: {str(e)}'}), 400
+        with jobs_lock:
+            jobs[job_id].update({'status': 'error', 'error': str(e)})
+
+
+@app.route('/api/download', methods=['POST'])
+def download():
+    data = request.get_json()
+    url = data.get('url', '').strip()
+    format_id = data.get('format_id', 'bestvideo+bestaudio/best')
+    title = data.get('title', 'video')
+
+    if not url:
+        return jsonify({'error': '请提供视频链接'}), 400
+
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {'status': 'downloading', 'file': None, 'filename': None, 'error': None, 'temp_dir': None}
+
+    t = threading.Thread(target=_do_download, args=(job_id, url, format_id, title))
+    t.daemon = True
+    t.start()
+
+    return jsonify({'job_id': job_id})
+
+
+@app.route('/api/status/<job_id>')
+def job_status(job_id):
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if not job:
+        return jsonify({'status': 'not_found'}), 404
+    return jsonify({'status': job['status'], 'error': job.get('error', '')})
+
+
+@app.route('/api/file/<job_id>')
+def get_file(job_id):
+    with jobs_lock:
+        job = jobs.get(job_id)
+
+    if not job or job['status'] != 'done':
+        return jsonify({'error': '文件未就绪'}), 404
+
+    filepath = job['file']
+    filename = job['filename']
+    temp_dir = job['temp_dir']
+
+    @after_this_request
+    def cleanup(response):
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        with jobs_lock:
+            jobs.pop(job_id, None)
+        return response
+
+    return send_file(filepath, as_attachment=True, download_name=filename)
 
 
 if __name__ == '__main__':
-    import threading
     import time
     import webbrowser
 
