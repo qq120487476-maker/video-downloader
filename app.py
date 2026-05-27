@@ -104,12 +104,22 @@ def _do_download(job_id, url, format_id, title):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.extract_info(url, download=True)
 
-        files = os.listdir(temp_dir)
-        if not files:
-            raise Exception('下载完成但未找到文件')
+        # Prefer the expected merged mp4 file
+        expected = os.path.join(temp_dir, f'{safe_name}.mp4')
+        if os.path.exists(expected) and os.path.getsize(expected) > 1024:
+            filepath = expected
+            ext = '.mp4'
+        else:
+            # Fallback: pick the largest non-temp file
+            candidates = [
+                os.path.join(temp_dir, f) for f in os.listdir(temp_dir)
+                if not f.endswith(('.part', '.ytdl', '.json'))
+            ]
+            if not candidates:
+                raise Exception('下载完成但未找到文件')
+            filepath = max(candidates, key=os.path.getsize)
+            ext = os.path.splitext(filepath)[1]
 
-        filepath = os.path.join(temp_dir, files[0])
-        ext = os.path.splitext(files[0])[1]
         safe_title = "".join(c for c in title if c.isalnum() or c in ' ._-（）').strip() or 'video'
         filename = f'{safe_title}{ext}'
 
